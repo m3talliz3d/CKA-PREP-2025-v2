@@ -5,31 +5,31 @@ echo "Creating namespace..."
 kubectl create ns mariadb --dry-run=client -o yaml | kubectl apply -f -
 
 # Query for default storage class to ensure PV uses correct class for binding
-default_sc=$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')
-if [ -z "$default_sc" ]; then
-  default_sc="standard"
-  echo "No default StorageClass detected, using 'standard' as fallback."
-else
-  echo "Default StorageClass detected: $default_sc"
-fi
-echo "Creating PersistentVolume..."
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: mariadb-pv
-  labels:
-    app: mariadb
-spec:
-  capacity:
-    storage: 250Mi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: $default_sc  # Use default or fallback storage class so PVC without storageClassName binds
-  hostPath:
-    path: /mnt/data/mariadb
-EOF
+# default_sc=$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')
+# if [ -z "$default_sc" ]; then
+#   default_sc="standard"
+#   echo "No default StorageClass detected, using 'standard' as fallback."
+# else
+#   echo "Default StorageClass detected: $default_sc"
+# fi
+# echo "Creating PersistentVolume..."
+# kubectl apply -f - <<EOF
+# apiVersion: v1
+# kind: PersistentVolume
+# metadata:
+#   name: mariadb-pv
+#   labels:
+#     app: mariadb
+# spec:
+#   capacity:
+#     storage: 250Mi
+#   accessModes:
+#     - ReadWriteOnce
+#   persistentVolumeReclaimPolicy: Retain
+#   storageClassName: $default_sc  # Use default or fallback storage class so PVC without storageClassName binds
+#   hostPath:
+#     path: /mnt/data/mariadb
+# EOF
 
 echo "Creating initial PVC..."
 kubectl apply -f - <<EOF
