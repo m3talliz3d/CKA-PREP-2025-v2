@@ -4,32 +4,16 @@ set -e
 echo "Creating namespace..."
 kubectl create ns mariadb --dry-run=client -o yaml | kubectl apply -f -
 
-# Query for default storage class to ensure PV uses correct class for binding
-# default_sc=$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')
-# if [ -z "$default_sc" ]; then
-#   default_sc="standard"
-#   echo "No default StorageClass detected, using 'standard' as fallback."
-# else
-#   echo "Default StorageClass detected: $default_sc"
-# fi
-# echo "Creating PersistentVolume..."
-# kubectl apply -f - <<EOF
-# apiVersion: v1
-# kind: PersistentVolume
-# metadata:
-#   name: mariadb-pv
-#   labels:
-#     app: mariadb
-# spec:
-#   capacity:
-#     storage: 250Mi
-#   accessModes:
-#     - ReadWriteOnce
-#   persistentVolumeReclaimPolicy: Retain
-#   storageClassName: $default_sc  # Use default or fallback storage class so PVC without storageClassName binds
-#   hostPath:
-#     path: /mnt/data/mariadb
-# EOF
+echo "Creating StorageClass with Retain policy..."
+kubectl apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: mariadb-retain
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+EOF
 
 echo "Creating initial PVC..."
 kubectl apply -f - <<EOF
@@ -41,6 +25,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: mariadb-retain
   resources:
     requests:
       storage: 250Mi
@@ -80,20 +65,28 @@ EOF
 
 kubectl apply -f ~/mariadb-deploy.yaml
 
-echo "Waiting for MariaDB pod to start..."
-kubectl wait --for=condition=Available deployment/mariadb -n mariadb --timeout=60s || true
+echo "Waiting for MariaDB pod to start (triggers PV dynamic provisioning)..."
+kubectl wait --for=condition=Available deployment/mariadb -n mariadb --timeout=90s || true
+
+echo "Capturing dynamically provisioned PV name..."
+PV_NAME=$(kubectl get pvc mariadb -n mariadb -o jsonpath='{.spec.volumeName}')
+if [ -z "$PV_NAME" ]; then
+  echo "ERROR: PVC not bound yet, PV name could not be resolved."
+  exit 1
+fi
+echo "   - PV name: $PV_NAME"
 
 echo "Simulating accidental deletion of Deployment and PVC..."
 kubectl delete deployment mariadb -n mariadb --ignore-not-found
 kubectl delete pvc mariadb -n mariadb --ignore-not-found
 
-echo "Resetting PV for reuse (clearing any stale claimRef)..."
-claim_ref=$(kubectl get pv mariadb-pv -o jsonpath='{.spec.claimRef.name}' 2>/dev/null || true)
-if [ -n "$claim_ref" ]; then
-  kubectl patch pv mariadb-pv --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
-fi
+echo "Waiting for PV to reach Released state..."
+kubectl wait --for=jsonpath='{.status.phase}'=Released pv/$PV_NAME --timeout=30s || true
 
-# Refresh the deployment manifest for practice: claimName intentionally left blank
+echo "Clearing stale claimRef so PV returns to Available..."
+kubectl patch pv $PV_NAME --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
+
+echo "Writing lab deployment manifest (claimName left blank for user to fill)..."
 cat <<'EOF' > ~/mariadb-deploy.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -125,7 +118,9 @@ spec:
           claimName: ""
 EOF
 
+echo ""
 echo "[OK] Lab setup complete!"
-echo "   - PV retained and ready for reuse"
-echo "   - Namespace: mariadb"
-echo "   - Task: recreate PVC and deployment reusing existing PV (fill claimName in ~/mariadb-deploy.yaml)"
+echo "   - Namespace:       mariadb"
+echo "   - PV name:         $PV_NAME"
+echo "   - PV status:       Available (Retain policy, data intact)"
+echo "   - Deployment file: ~/mariadb-deploy.yaml (claimName is blank)"
